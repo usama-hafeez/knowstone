@@ -209,17 +209,120 @@ function hasComputedImport(content: string): boolean {
   return nonLiteral.test(content) || interpolated.test(content);
 }
 
+/** tsconfig-style path aliases: a baseUrl and a map of patterns to targets. */
+export interface AliasConfig {
+  /** Repo-relative base the targets resolve against (tsconfig baseUrl, default "."). */
+  baseUrl: string;
+  /** Pattern -> targets, e.g. { "@/*": ["src/*"] }. */
+  paths: Record<string, string[]>;
+}
+
+/** Strip // and block comments and trailing commas so a tsconfig parses as JSON. */
+function parseJsonc(text: string): unknown {
+  const noBlock = text.replace(/\/\*[\s\S]*?\*\//g, "");
+  const noLine = noBlock.replace(/(^|[^:"])\/\/.*$/gm, "$1");
+  const noTrailingCommas = noLine.replace(/,(\s*[}\]])/g, "$1");
+  return JSON.parse(noTrailingCommas);
+}
+
+/**
+ * Load path aliases from the repo's tsconfig.json (compilerOptions.baseUrl and
+ * paths). Returns null when there is no tsconfig, it cannot be parsed, or it
+ * declares no paths. `extends` is not followed yet (a known limitation).
+ */
+export function loadAliasConfig(root: string): AliasConfig | null {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(path.join(root, "tsconfig.json"), "utf8");
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = parseJsonc(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const compilerOptions = (parsed as { compilerOptions?: unknown }).compilerOptions;
+  if (typeof compilerOptions !== "object" || compilerOptions === null) return null;
+  const co = compilerOptions as { baseUrl?: unknown; paths?: unknown };
+  if (typeof co.paths !== "object" || co.paths === null) return null;
+
+  const paths: Record<string, string[]> = {};
+  for (const [pattern, targets] of Object.entries(co.paths as Record<string, unknown>)) {
+    if (Array.isArray(targets)) {
+      const stringTargets = targets.filter((t): t is string => typeof t === "string");
+      if (stringTargets.length > 0) paths[pattern] = stringTargets;
+    }
+  }
+  if (Object.keys(paths).length === 0) return null;
+
+  const baseUrl = typeof co.baseUrl === "string" ? co.baseUrl : ".";
+  return { baseUrl, paths };
+}
+
+/**
+ * Resolve a non-relative specifier through tsconfig path aliases. Returns a
+ * repo-relative file in the set, or null if no alias pattern matches or the
+ * target does not exist.
+ */
+function resolveAlias(
+  spec: string,
+  aliases: AliasConfig,
+  fileSet: Set<string>,
+  lowerIndex: Map<string, string>,
+): string | null {
+  const baseDir = normalisePath(path.posix.join(aliases.baseUrl));
+  for (const [pattern, targets] of Object.entries(aliases.paths)) {
+    const star = pattern.indexOf("*");
+    for (const target of targets) {
+      let candidate: string | null = null;
+      if (star === -1) {
+        if (spec === pattern) candidate = path.posix.join(baseDir, target);
+      } else {
+        const prefix = pattern.slice(0, star);
+        const suffix = pattern.slice(star + 1);
+        if (
+          spec.length >= prefix.length + suffix.length &&
+          spec.startsWith(prefix) &&
+          spec.endsWith(suffix)
+        ) {
+          const middle = spec.slice(prefix.length, spec.length - suffix.length);
+          candidate = path.posix.join(baseDir, target.replace("*", middle));
+        }
+      }
+      if (candidate !== null) {
+        const hit = resolveCandidate(candidate, fileSet, lowerIndex, true);
+        if (hit !== null) return hit;
+      }
+    }
+  }
+  return null;
+}
+
+export interface BuildImportGraphOptions {
+  /**
+   * tsconfig path aliases to resolve. Pass null to disable alias resolution.
+   * When the field is omitted, aliases are auto-loaded from the repo's
+   * tsconfig.json.
+   */
+  aliases?: AliasConfig | null;
+}
+
 /**
  * Build the import graph over the given repo-relative files. root is the
  * absolute repo root. Read each file, extract its imports, and resolve RELATIVE
- * specifiers (starting with ".") against the file's directory to a repo-relative
- * path, trying the known extensions and /index files for ts/js, with a
- * case-insensitive fallback (this repo runs on case-insensitive filesystems). A
- * resolved target is kept only if it is in the input file set. Specifiers we
- * cannot resolve to a repo file mark the importing file as incomplete. Forward
- * slashes everywhere.
+ * specifiers (starting with ".") against the file's directory, plus non-relative
+ * specifiers through tsconfig path aliases when configured. A resolved target is
+ * kept only if it is in the input file set. Specifiers we cannot resolve to a
+ * repo file mark the importing file as incomplete. Forward slashes everywhere.
  */
-export function buildImportGraph(root: string, files: string[]): ImportGraph {
+export function buildImportGraph(
+  root: string,
+  files: string[],
+  options?: BuildImportGraphOptions,
+): ImportGraph {
   const normalisedFiles = files.map(normalisePath);
   const fileSet = new Set(normalisedFiles);
   // Lowercase index for case-insensitive resolution; maps lower-case -> actual.
@@ -227,6 +330,10 @@ export function buildImportGraph(root: string, files: string[]): ImportGraph {
   for (const f of fileSet) {
     lowerIndex.set(f.toLowerCase(), f);
   }
+
+  // Explicit aliases (including null to disable) win; otherwise auto-load tsconfig.
+  const aliases =
+    options && "aliases" in options ? (options.aliases ?? null) : loadAliasConfig(root);
 
   const edges = new Map<string, Set<string>>();
   const incomplete = new Set<string>();
@@ -250,6 +357,7 @@ export function buildImportGraph(root: string, files: string[]): ImportGraph {
 
     const specifiers = extractImports(language, content);
     const fileDir = path.posix.dirname(file);
+    const tsLike = language === "ts" || language === "js";
 
     for (const spec of specifiers) {
       if (spec.startsWith(".")) {
@@ -260,14 +368,23 @@ export function buildImportGraph(root: string, files: string[]): ImportGraph {
           // A relative import we could not locate in the repo: do not miss it.
           incomplete.add(file);
         }
+        continue;
+      }
+
+      // Non-relative: try tsconfig path aliases before giving up.
+      const aliased =
+        aliases !== null && tsLike ? resolveAlias(spec, aliases, fileSet, lowerIndex) : null;
+      if (aliased !== null && aliased !== file) {
+        targets.add(aliased);
       } else if (isUnresolvableInRepo(spec)) {
+        // An alias-shaped or absolute intra-repo import we could not resolve.
         incomplete.add(file);
       }
       // Otherwise a bare external module (npm package, node builtin, php
       // namespace, python package, go import path): outside the repo, ignored.
     }
 
-    if ((language === "ts" || language === "js") && hasComputedImport(content)) {
+    if (tsLike && hasComputedImport(content)) {
       incomplete.add(file);
     }
   }
@@ -276,13 +393,52 @@ export function buildImportGraph(root: string, files: string[]): ImportGraph {
 }
 
 /**
- * Resolve a relative specifier against the importing file's directory (both
- * repo-relative, posix). Returns a repo-relative target that exists in fileSet,
- * or null. For ts/js we try the specifier as-is, then each known extension, then
- * as a directory with /index.<ext>; we also strip a trailing ".js" and retry as
- * a ts/js source (NodeNext writes ./x.js meaning ./x.ts). Lookups fall back to a
- * case-insensitive match so a `./B.js` import finds `b.ts` on a case-insensitive
- * filesystem. For other languages we only try the specifier as written.
+ * Try to resolve a candidate repo-relative path to an actual file in the set,
+ * falling back to a case-insensitive match. When tryExtensions is true (ts/js),
+ * it also tries each known extension, a ".js" -> source rewrite (NodeNext writes
+ * ./x.js meaning ./x.ts), and a directory /index.<ext> file.
+ */
+function resolveCandidate(
+  candidate: string,
+  fileSet: Set<string>,
+  lowerIndex: Map<string, string>,
+  tryExtensions: boolean,
+): string | null {
+  const base = normalisePath(candidate);
+
+  const exists = (c: string): string | null => {
+    const normalised = normalisePath(c);
+    if (fileSet.has(normalised)) return normalised;
+    const ci = lowerIndex.get(normalised.toLowerCase());
+    return ci ?? null;
+  };
+
+  const asIs = exists(base);
+  if (asIs !== null) return asIs;
+  if (!tryExtensions) return null;
+
+  const stems = new Set<string>([base]);
+  if (base.toLowerCase().endsWith(".js")) {
+    stems.add(base.slice(0, -3));
+  }
+  for (const stem of stems) {
+    for (const ext of TS_JS_EXTENSIONS) {
+      const hit = exists(stem + ext);
+      if (hit !== null) return hit;
+    }
+  }
+  for (const ext of TS_JS_EXTENSIONS) {
+    const hit = exists(normalisePath(path.posix.join(base, "index" + ext)));
+    if (hit !== null) return hit;
+  }
+  return null;
+}
+
+/**
+ * Resolve a relative specifier against the importing file's directory. ts/js get
+ * extension and /index trials; other languages are matched as written. Lookups
+ * fall back to a case-insensitive match so a `./B.js` import finds `b.ts` on a
+ * case-insensitive filesystem.
  */
 function resolveRelative(
   fileDir: string,
@@ -291,44 +447,9 @@ function resolveRelative(
   fileSet: Set<string>,
   lowerIndex: Map<string, string>,
 ): string | null {
-  const base = normalisePath(path.posix.join(fileDir, spec));
-
-  const exists = (candidate: string): string | null => {
-    const normalised = normalisePath(candidate);
-    if (fileSet.has(normalised)) return normalised;
-    const ci = lowerIndex.get(normalised.toLowerCase());
-    return ci ?? null;
-  };
-
-  // Exact match as written (works for php/py/go relative paths too).
-  const asIs = exists(base);
-  if (asIs !== null) return asIs;
-
-  if (language !== "ts" && language !== "js") {
-    return null;
-  }
-
-  // The stems to try: the specifier itself, plus a ".js" -> "" rewrite so a
-  // NodeNext "./x.js" can match an on-disk "./x.ts".
-  const stems = new Set<string>([base]);
-  if (base.toLowerCase().endsWith(".js")) {
-    stems.add(base.slice(0, -3));
-  }
-
-  for (const stem of stems) {
-    for (const ext of TS_JS_EXTENSIONS) {
-      const hit = exists(stem + ext);
-      if (hit !== null) return hit;
-    }
-  }
-
-  // Directory with an /index.<ext> file.
-  for (const ext of TS_JS_EXTENSIONS) {
-    const hit = exists(normalisePath(path.posix.join(base, "index" + ext)));
-    if (hit !== null) return hit;
-  }
-
-  return null;
+  const base = path.posix.join(fileDir, spec);
+  const tryExtensions = language === "ts" || language === "js";
+  return resolveCandidate(base, fileSet, lowerIndex, tryExtensions);
 }
 
 /**
