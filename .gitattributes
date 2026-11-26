@@ -1,0 +1,4 @@
+# Normalise line endings to LF in the repo and on checkout for every OS, so
+# formatting and tooling (for example `prettier --check`) are deterministic and
+# do not fail on Windows where git would otherwise check out CRLF.
+* text=auto eol=lf
