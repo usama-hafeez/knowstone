@@ -1,0 +1,16 @@
+{
+  "name": "custom-claude-plugins",
+  "description": "A small marketplace of Claude Code plugins by usama-hafeez.",
+  "owner": {
+    "name": "usama-hafeez"
+  },
+  "plugins": [
+    {
+      "name": "knowstone",
+      "source": "./plugins/knowstone",
+      "description": "Local-first verified memory: project facts bound to the hash of the code they came from, withheld for re-verification when that code changes.",
+      "category": "productivity",
+      "tags": ["memory", "cache", "codebase", "freshness", "verification"]
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Keystone local cache / data (never commit a user's cached project knowledge)
+.keystone/
+*.keystone.db
+*.keystone.db-*
+keystone-data/
+
+# Benchmark raw output (large, machine-specific)
+benchmarks/runs/
+*.jsonl
+
+# Secrets — never commit (belt and braces; the plugin also refuses to cache these)
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Test / coverage
+coverage/
+.nyc_output/

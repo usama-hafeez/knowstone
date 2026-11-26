@@ -1,0 +1,10 @@
+{
+  "name": "knowstone",
+  "version": "0.1.0",
+  "description": "Local-first verified memory for Claude Code. Stores project facts and verified findings bound to the hash of the code they came from, and withholds any fact for re-verification once that code changes.",
+  "author": {
+    "name": "usama-hafeez"
+  },
+  "license": "MIT",
+  "keywords": ["memory", "cache", "codebase", "freshness", "verification", "provenance"]
+}

@@ -1,0 +1,36 @@
+{
+  "name": "knowstone",
+  "version": "0.1.0",
+  "description": "Local-first verified memory for Claude Code: project facts bound to the hash of the code they came from, withheld for re-verification when that code changes.",
+  "license": "MIT",
+  "author": "usama-hafeez",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "hooks",
+    "bin",
+    ".claude-plugin"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "9.15.0",
+    "@types/node": "22.9.0",
+    "eslint": "9.15.0",
+    "prettier": "3.3.3",
+    "typescript": "5.6.3",
+    "typescript-eslint": "8.15.0",
+    "vitest": "2.1.5"
+  }
+}
