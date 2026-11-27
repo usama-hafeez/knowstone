@@ -1,0 +1,17 @@
+{
+  "description": "Inject Knowstone's tiny static project card into context at session start.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/dist/hooks/session-start.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
