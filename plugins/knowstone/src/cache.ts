@@ -12,7 +12,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { projectDir, type StoreOptions } from "./store.js";
+import { assertProjectDir, projectDir, writeProjectMarker, type StoreOptions } from "./store.js";
 import type { HashSnapshot } from "./incremental.js";
 import type { StructureSummary } from "./structure.js";
 import type { Route } from "./routes.js";
@@ -33,9 +33,22 @@ export interface IndexCache {
   routes: Route[];
   schema: Table[];
   scripts: ScriptEntry[];
+  /**
+   * Names of the Tier-A views whose extractor failed to run for this build (e.g.
+   * "routes"). These views are UNKNOWN, not empty: callers must present them as
+   * "not mapped, explore" rather than as an authoritative empty result, so a crash
+   * in one extractor never turns into a false fact.
+   */
+  degraded: string[];
+  /**
+   * True when the repo was larger than the file cap, so the index (and every view
+   * derived from it) covers only a prefix of the repo. The map is incomplete, not
+   * authoritative.
+   */
+  truncated: boolean;
 }
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 /** The on-disk path of the index cache for a project. */
 export function cachePath(options: StoreOptions): string {
@@ -47,6 +60,12 @@ export function cachePath(options: StoreOptions): string {
  * cache-format version does not match (a stale format is rebuilt, not trusted).
  */
 export function readIndexCache(options: StoreOptions): IndexCache | null {
+  try {
+    // A data dir claimed by a different project must never serve its cache here.
+    assertProjectDir(options);
+  } catch {
+    return null;
+  }
   const filePath = cachePath(options);
   if (!existsSync(filePath)) return null;
   try {
@@ -70,6 +89,8 @@ function isValidCache(parsed: Partial<IndexCache> | null | undefined): parsed is
   if (typeof parsed.snapshot !== "object" || parsed.snapshot === null) return false;
   if (!Array.isArray(parsed.routes) || !Array.isArray(parsed.schema)) return false;
   if (!Array.isArray(parsed.scripts)) return false;
+  if (!Array.isArray(parsed.degraded)) return false;
+  if (typeof parsed.truncated !== "boolean") return false;
   const structure = parsed.structure;
   if (typeof structure !== "object" || structure === null) return false;
   if (typeof structure.fileCount !== "number") return false;
@@ -84,8 +105,10 @@ function isValidCache(parsed: Partial<IndexCache> | null | undefined): parsed is
  * cache-format version, which is stamped here.
  */
 export function writeIndexCache(options: StoreOptions, cache: Omit<IndexCache, "version">): void {
+  assertProjectDir(options); // never clobber another project's data directory
   const dir = projectDir(options);
   mkdirSync(dir, { recursive: true });
+  writeProjectMarker(options); // claim this data dir for this project
   const out: IndexCache = { version: CACHE_VERSION, ...cache };
   const filePath = cachePath(options);
   const tmp = `${filePath}.tmp`;

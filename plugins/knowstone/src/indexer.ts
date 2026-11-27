@@ -25,28 +25,58 @@ const DEFAULT_IGNORE_DIRS = new Set([
   "obj",
 ]);
 
+/**
+ * Default ceiling on how many source files one index will hold. A pathological or
+ * very large monorepo must stay cheap and bounded rather than walk unboundedly, so
+ * the walk stops once this many files are collected. Generous enough that ordinary
+ * repositories are never affected; configurable via ListOptions.maxFiles.
+ */
+export const DEFAULT_MAX_FILES = 50_000;
+
 export interface ListOptions {
   /** Extra directory names to skip, in addition to the defaults. */
   ignoreDirs?: string[];
   /** Maximum file size in bytes to include (default 2 MiB). Larger files are skipped. */
   maxFileBytes?: number;
+  /** Maximum number of files to collect (default DEFAULT_MAX_FILES). Keeps huge repos cheap. */
+  maxFiles?: number;
+}
+
+/** A source-file walk result: the files plus whether the file cap was reached. */
+export interface WalkResult {
+  /** Repo-relative, forward-slash source file paths, sorted. */
+  files: string[];
+  /**
+   * True when the file cap was hit and the walk stopped early. `files` is always
+   * returned sorted, but under truncation it is a traversal-order-dependent subset
+   * of the repo, not a stable prefix, so callers must treat the resulting views as
+   * incomplete rather than authoritative.
+   */
+  truncated: boolean;
 }
 
 /**
  * Walk the repo and return repo-relative, forward-slash source file paths
- * (ts/js/php/py/go), sorted. Hidden directories (names starting with ".") and
- * the default noise directories are skipped, symlinks are not followed, and
- * files larger than maxFileBytes are omitted. Note: .gitignore is not honoured
- * yet (a known limitation).
+ * (ts/js/php/py/go), sorted, together with whether the file cap was reached.
+ * Hidden directories (names starting with ".") and the default noise directories
+ * are skipped, symlinks are not followed, files larger than maxFileBytes are
+ * omitted, and collection stops once maxFiles files have been gathered. Note:
+ * .gitignore is not honoured yet (a known limitation).
  */
-export function listSourceFiles(root: string, options: ListOptions = {}): string[] {
+export function walkSourceFiles(root: string, options: ListOptions = {}): WalkResult {
   const ignore = new Set(DEFAULT_IGNORE_DIRS);
   for (const dir of options.ignoreDirs ?? []) ignore.add(dir);
   const maxBytes = options.maxFileBytes ?? 2 * 1024 * 1024;
+  const maxFiles = options.maxFiles ?? DEFAULT_MAX_FILES;
 
   const out: string[] = [];
+  let truncated = false;
 
   const walk = (absDir: string, relDir: string): void => {
+    if (out.length >= maxFiles) {
+      truncated = true;
+      return;
+    }
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(absDir, { withFileTypes: true });
@@ -55,6 +85,10 @@ export function listSourceFiles(root: string, options: ListOptions = {}): string
     }
 
     for (const entry of entries) {
+      if (out.length >= maxFiles) {
+        truncated = true;
+        return;
+      }
       const name = entry.name;
       if (entry.isSymbolicLink()) continue; // never follow symlinks
       const relPath = relDir === "" ? name : `${relDir}/${name}`;
@@ -77,7 +111,16 @@ export function listSourceFiles(root: string, options: ListOptions = {}): string
   };
 
   walk(root, "");
-  return out.sort();
+  return { files: out.sort(), truncated };
+}
+
+/**
+ * Walk the repo and return just the sorted source file list (ts/js/php/py/go).
+ * Thin wrapper over walkSourceFiles for callers that do not need the truncation
+ * flag; see walkSourceFiles for the full contract.
+ */
+export function listSourceFiles(root: string, options: ListOptions = {}): string[] {
+  return walkSourceFiles(root, options).files;
 }
 
 export interface Index {
@@ -87,11 +130,16 @@ export interface Index {
   files: string[];
   /** Import graph over those files. */
   graph: ImportGraph;
+  /**
+   * True when the file cap was reached and the index is only a prefix of the repo.
+   * Optional so existing hand-built Index literals stay valid; absent means false.
+   */
+  truncated?: boolean;
 }
 
 /** Build a project index: the source file list plus its import graph. */
 export function buildIndex(root: string, options: ListOptions = {}): Index {
-  const files = listSourceFiles(root, options);
+  const { files, truncated } = walkSourceFiles(root, options);
   const graph = buildImportGraph(root, files);
-  return { root, files, graph };
+  return { root, files, graph, truncated };
 }

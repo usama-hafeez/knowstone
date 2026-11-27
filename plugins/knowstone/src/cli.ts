@@ -23,15 +23,23 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { KNOWSTONE_VERSION } from "./index.js";
 import { buildIndex } from "./indexer.js";
-import { extractStructure } from "./structure.js";
+import { extractStructure, type StructureSummary } from "./structure.js";
 import { extractRoutes } from "./routes.js";
 import { extractSchema } from "./schema.js";
 import { extractScripts } from "./scripts.js";
 import { snapshotRepo } from "./incremental.js";
-import { buildBinding, checkFreshness } from "./freshness.js";
-import { canonicalProjectRoot, openStore, SecretError, type StoreOptions } from "./store.js";
+import { buildBinding, checkFreshness, type FreshnessResult } from "./freshness.js";
+import {
+  canonicalProjectRoot,
+  openStore,
+  projectKey,
+  SecretError,
+  type StoreOptions,
+} from "./store.js";
 import { writeIndexCache } from "./cache.js";
 import { renderCard } from "./card.js";
+import { enforceCaps } from "./caps.js";
+import { logEvent } from "./log.js";
 
 /** The environment a CLI run operates in (injectable for tests). */
 export interface CliEnv {
@@ -97,20 +105,79 @@ function resolveStore(flags: Record<string, string | boolean>, env: CliEnv): Sto
   return { baseDir, projectRoot };
 }
 
+/**
+ * Record one freshness decision to the structured log (PLAN.md M5). Best-effort via
+ * logEvent; logs the fact id, the status and reason, and how many cone files
+ * changed — never the fact's statement text.
+ */
+function logFreshness(
+  options: StoreOptions,
+  factId: string,
+  result: FreshnessResult,
+  at: number,
+): void {
+  logEvent(
+    options.baseDir,
+    "freshness",
+    {
+      projectKey: projectKey(options.projectRoot),
+      factId,
+      status: result.status,
+      reason: result.reason,
+      changed: result.changed.length,
+    },
+    at,
+  );
+}
+
 /** Format the language breakdown as "ts 100, php 20". */
 function languageSummary(byLanguage: Record<string, number>): string {
   const parts = Object.entries(byLanguage).map(([lang, count]) => `${lang} ${count}`);
   return parts.length > 0 ? parts.join(", ") : "none";
 }
 
+/**
+ * Run one extractor in isolation. A thrown extractor must never abort the whole
+ * map nor be reported as an empty (authoritative) result: on failure we record the
+ * view name in `degraded` and return the given fallback, so the view is later shown
+ * as "unknown, explore" rather than as a false fact. The engine never serves a guess.
+ */
+function safeExtract<T>(name: string, fallback: T, degraded: string[], run: () => T): T {
+  try {
+    return run();
+  } catch {
+    degraded.push(name);
+    return fallback;
+  }
+}
+
+/** Empty structure summary used when the structure extractor itself fails. */
+const EMPTY_STRUCTURE: StructureSummary = {
+  fileCount: 0,
+  byLanguage: {},
+  topLevelDirs: [],
+  entryPoints: [],
+};
+
 function cmdMap(flags: Record<string, string | boolean>, env: CliEnv): number {
   const options = resolveStore(flags, env);
   const index = buildIndex(options.projectRoot);
-  const structure = extractStructure(index);
-  const routes = extractRoutes(index);
-  const schema = extractSchema(index);
-  const scripts = extractScripts(index);
+
+  const degraded: string[] = [];
+  const structure = safeExtract("structure", EMPTY_STRUCTURE, degraded, () =>
+    extractStructure(index),
+  );
+  const routes = safeExtract("routes", [] as ReturnType<typeof extractRoutes>, degraded, () =>
+    extractRoutes(index),
+  );
+  const schema = safeExtract("schema", [] as ReturnType<typeof extractSchema>, degraded, () =>
+    extractSchema(index),
+  );
+  const scripts = safeExtract("scripts", [] as ReturnType<typeof extractScripts>, degraded, () =>
+    extractScripts(index),
+  );
   const snapshot = snapshotRepo(index, KNOWSTONE_VERSION);
+  const truncated = index.truncated ?? false;
 
   writeIndexCache(options, {
     toolVersion: KNOWSTONE_VERSION,
@@ -120,13 +187,38 @@ function cmdMap(flags: Record<string, string | boolean>, env: CliEnv): number {
     routes,
     schema,
     scripts,
+    degraded,
+    truncated,
   });
 
+  // Keep Tier-A caches within budget (never evicts Tier-B findings).
+  enforceCaps(options.baseDir, {}, env.now);
+
+  // Report each view honestly: a count only when the extractor succeeded, and
+  // "unknown" (never "0") for a view whose extractor failed.
+  const degradedSet = new Set(degraded);
+  const count = (name: string, n: number, label: string): string =>
+    degradedSet.has(name) ? `unknown ${label}` : `${n} ${label}`;
+
   env.out(`Mapped ${options.projectRoot}`);
-  env.out(`  ${structure.fileCount} source files (${languageSummary(structure.byLanguage)})`);
+  if (degradedSet.has("structure")) {
+    env.out("  source files: unknown (structure extractor failed; explore the repo)");
+  } else {
+    env.out(`  ${structure.fileCount} source files (${languageSummary(structure.byLanguage)})`);
+  }
   env.out(
-    `  ${routes.length} routes, ${schema.length} DB tables, ${scripts.length} npm scripts, ${structure.entryPoints.length} entry points`,
+    `  ${count("routes", routes.length, "routes")}, ${count("schema", schema.length, "DB tables")}, ${count("scripts", scripts.length, "npm scripts")}, ${structure.entryPoints.length} entry points`,
   );
+  if (truncated) {
+    env.out(
+      "  note: the repo exceeded the file cap, so this map covers only part of it. Treat it as incomplete.",
+    );
+  }
+  if (degraded.length > 0) {
+    env.out(
+      `  note: these views could not be derived and are unknown, not empty: ${degraded.join(", ")}. Explore them directly.`,
+    );
+  }
   env.out("Map saved. Use knowstone:note to record a finding, knowstone:recall to retrieve.");
   return 0;
 }
@@ -190,6 +282,7 @@ function cmdNote(flags: Record<string, string | boolean>, env: CliEnv): number {
     toolVersion: KNOWSTONE_VERSION,
     now: env.now,
   });
+  logFreshness(options, fact.id, freshness, env.now);
   env.out(
     `Recorded finding [${fact.id}] bound to ${binding.cone.length} evidence file(s). Status: ${freshness.status}.`,
   );
@@ -225,6 +318,7 @@ function cmdRecall(flags: Record<string, string | boolean>, env: CliEnv): number
       toolVersion: KNOWSTONE_VERSION,
       now: env.now,
     });
+    logFreshness(options, fact.id, result, env.now);
     if (result.status === "FRESH") {
       fresh.push(`  [${fact.id}] ${fact.statement}`);
     } else {

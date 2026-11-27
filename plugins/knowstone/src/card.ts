@@ -43,11 +43,30 @@ export function renderCard(options: StoreOptions): string {
     .map(([lang, count]) => `${lang} ${count}`)
     .join(", ");
 
-  return [
+  // A degraded view is UNKNOWN, not empty: show "unknown" so the card never
+  // presents a failed extractor's empty result as an authoritative fact. Older
+  // caches have no `degraded`/`truncated`; default to a non-degraded, complete map.
+  const degraded = new Set(cache.degraded ?? []);
+  const view = (name: string, n: number, label: string): string =>
+    degraded.has(name) ? `unknown ${label}` : `${n} ${label}`;
+  const structureLine = degraded.has("structure")
+    ? "source map unknown (not derived);"
+    : `${cache.structure.fileCount} source files (${languages}); top dirs: ${dirs || "."};`;
+
+  const lines = [
     `Knowstone project map (built ${isoDate(cache.builtAt)}):`,
-    `${cache.structure.fileCount} source files (${languages}); top dirs: ${dirs || "."};`,
-    `${cache.routes.length} routes, ${cache.schema.length} DB tables, ${cache.scripts.length} npm scripts.`,
+    structureLine,
+    `${view("routes", cache.routes.length, "routes")}, ${view("schema", cache.schema.length, "DB tables")}, ${view("scripts", cache.scripts.length, "npm scripts")}.`,
     `${findingCount} verified finding(s) on record.`,
+  ];
+  if (cache.truncated) {
+    lines.push("Map is partial (repo exceeded the file cap); treat it as incomplete.");
+  }
+  if (degraded.size > 0) {
+    lines.push(`Some views are unknown, not empty: ${[...degraded].join(", ")}; explore directly.`);
+  }
+  lines.push(
     `Use knowstone:recall to retrieve findings (each is freshness-checked and withheld if its code changed), and knowstone:map to refresh the map.`,
-  ].join(" ");
+  );
+  return lines.join(" ");
 }
