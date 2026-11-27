@@ -45,3 +45,27 @@ jobs:
           node -e "JSON.parse(require('fs').readFileSync('plugins/knowstone/.claude-plugin/plugin.json','utf8')); console.log('plugin.json OK')"
       # NOTE: full `claude plugin validate` is run locally and at release time
       # (it needs the Claude Code CLI, which this self-contained CI does not install).
+
+  dist-in-sync:
+    name: dist is in sync with src
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/knowstone
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - name: Install dependencies
+        run: npm install
+      - name: Rebuild dist from src
+        run: npm run build
+      - name: Fail if committed dist is stale
+        # The plugin ships its compiled dist/ (Claude Code does not build on
+        # install). If rebuilding changes anything, the commit's dist is stale.
+        run: |
+          if ! git diff --exit-code -- dist; then
+            echo "::error::dist/ is out of sync with src/. Run 'npm run build' in plugins/knowstone and commit the result."
+            exit 1
+          fi

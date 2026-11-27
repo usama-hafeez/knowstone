@@ -8,6 +8,12 @@ dist/
 build/
 *.tsbuildinfo
 
+# The published plugin's compiled output IS shipped: Claude Code installs a
+# plugin by copying the repo tree and does not run a build step, so a fresh
+# install needs dist/ present. CI verifies it stays in sync with src/.
+!plugins/knowstone/dist/
+!plugins/knowstone/dist/**
+
 # Keystone local cache / data (never commit a user's cached project knowledge)
 .keystone/
 *.keystone.db
