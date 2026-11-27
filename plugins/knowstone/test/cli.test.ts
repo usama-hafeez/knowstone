@@ -194,6 +194,24 @@ describe("cli: card", () => {
     expect(card).toContain("1 verified finding(s) on record");
   });
 
+  it("directs the model to recall first only when findings exist", () => {
+    const fx = makeFixture();
+
+    // Map built, no findings yet: the card must NOT push a recall-first call
+    // (recall would return nothing), and should point at note/map instead.
+    run(fx, ["map"]);
+    const empty = run(fx, ["card"]).out;
+    expect(empty).toContain("No verified findings recorded yet");
+    expect(empty).not.toContain("run knowstone:recall first");
+
+    // Once a finding is on record, the card instructs recall-first at the two
+    // moments that matter (returning to the code, acting on a prior conclusion).
+    run(fx, ["note", "--statement", "a finding", "--evidence", "src/auth.ts"]);
+    const withFinding = run(fx, ["card"]).out;
+    expect(withFinding).toContain("run knowstone:recall first");
+    expect(withFinding).toContain("Before exploring this code or acting on a prior conclusion");
+  });
+
   it("treats a partial/corrupt cache as absent rather than crashing", () => {
     const fx = makeFixture();
     const options = { baseDir: fx.baseDir, projectRoot: canonicalProjectRoot(fx.root) };

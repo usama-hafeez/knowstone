@@ -57,7 +57,6 @@ export function renderCard(options: StoreOptions): string {
     `Knowstone project map (built ${isoDate(cache.builtAt)}):`,
     structureLine,
     `${view("routes", cache.routes.length, "routes")}, ${view("schema", cache.schema.length, "DB tables")}, ${view("scripts", cache.scripts.length, "npm scripts")}.`,
-    `${findingCount} verified finding(s) on record.`,
   ];
   if (cache.truncated) {
     lines.push("Map is partial (repo exceeded the file cap); treat it as incomplete.");
@@ -65,8 +64,20 @@ export function renderCard(options: StoreOptions): string {
   if (degraded.size > 0) {
     lines.push(`Some views are unknown, not empty: ${[...degraded].join(", ")}; explore directly.`);
   }
-  lines.push(
-    `Use knowstone:recall to retrieve findings (each is freshness-checked and withheld if its code changed), and knowstone:map to refresh the map.`,
-  );
+  // The call to action is conditional on there being findings. When some exist,
+  // direct the model to recall them FIRST (the two moments that matter: returning
+  // to this code, and acting on a prior conclusion) — this is the nudge the M6
+  // benchmark showed was missing. When none exist, recall has nothing to return,
+  // so point at note/map instead and don't waste a call. The text is still a pure
+  // function of stored state, so the card stays static and cache-safe.
+  if (findingCount > 0) {
+    lines.push(
+      `${findingCount} verified finding(s) on record for this project. Before exploring this code or acting on a prior conclusion about it, run knowstone:recall first: it returns these findings freshness-checked and withholds any whose code has changed. Use knowstone:map to refresh the map, knowstone:note to record a new finding.`,
+    );
+  } else {
+    lines.push(
+      `No verified findings recorded yet. Use knowstone:note to record a verified conclusion and knowstone:map to refresh the map.`,
+    );
+  }
   return lines.join(" ");
 }
