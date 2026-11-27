@@ -6,5 +6,8 @@
     "name": "usama-hafeez"
   },
   "license": "MIT",
-  "keywords": ["memory", "cache", "codebase", "freshness", "verification", "provenance"]
+  "keywords": ["memory", "cache", "codebase", "freshness", "verification", "provenance"],
+  "network": {
+    "hosts": []
+  }
 }
