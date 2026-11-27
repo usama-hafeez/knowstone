@@ -337,7 +337,7 @@ function cmdRecall(flags: Record<string, string | boolean>, env: CliEnv): number
 }
 
 function cmdCard(flags: Record<string, string | boolean>, env: CliEnv): number {
-  env.out(renderCard(resolveStore(flags, env)));
+  env.out(renderCard(resolveStore(flags, env), env.now));
   return 0;
 }
 

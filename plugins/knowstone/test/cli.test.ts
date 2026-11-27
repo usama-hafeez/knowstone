@@ -182,34 +182,42 @@ describe("cli: note guards", () => {
 });
 
 describe("cli: card", () => {
-  it("shows a hint before a map and a summary after", () => {
+  it("shows a hint before a map, then a summary with no findings yet", () => {
     const fx = makeFixture();
     expect(run(fx, ["card"]).out).toContain("no project map yet");
 
     run(fx, ["map"]);
-    run(fx, ["note", "--statement", "a finding", "--evidence", "src/auth.ts"]);
-
     const card = run(fx, ["card"]).out;
     expect(card).toContain("Knowstone project map");
-    expect(card).toContain("1 verified finding(s) on record");
+    expect(card).toContain("No verified findings recorded yet");
   });
 
-  it("directs the model to recall first only when findings exist", () => {
+  it("carries a current finding in the card and withholds it once its code changes", () => {
     const fx = makeFixture();
-
-    // Map built, no findings yet: the card must NOT push a recall-first call
-    // (recall would return nothing), and should point at note/map instead.
     run(fx, ["map"]);
-    const empty = run(fx, ["card"]).out;
-    expect(empty).toContain("No verified findings recorded yet");
-    expect(empty).not.toContain("run knowstone:recall first");
+    run(fx, [
+      "note",
+      "--statement",
+      "Login hashing uses a 64-char token digest",
+      "--evidence",
+      "src/auth.ts",
+    ]);
 
-    // Once a finding is on record, the card instructs recall-first at the two
-    // moments that matter (returning to the code, acting on a prior conclusion).
-    run(fx, ["note", "--statement", "a finding", "--evidence", "src/auth.ts"]);
-    const withFinding = run(fx, ["card"]).out;
-    expect(withFinding).toContain("run knowstone:recall first");
-    expect(withFinding).toContain("Before exploring this code or acting on a prior conclusion");
+    // FRESH: the card delivers the verified finding's text directly, so the model
+    // has it from turn one without having to run recall.
+    const fresh = run(fx, ["card"]).out;
+    expect(fresh).toContain("still current");
+    expect(fresh).toContain("Login hashing uses a 64-char token digest");
+
+    // Change the evidence file: the finding must be HELD and its text withheld —
+    // the trust guarantee, delivered passively. The stale statement never appears.
+    fx.write(
+      "src/auth.ts",
+      `import { hash } from "./hash.js";\nexport const login = () => hash("y");\n`,
+    );
+    const stale = run(fx, ["card"]).out;
+    expect(stale).not.toContain("Login hashing uses a 64-char token digest");
+    expect(stale).toContain("held for re-verify");
   });
 
   it("treats a partial/corrupt cache as absent rather than crashing", () => {
