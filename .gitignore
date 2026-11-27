@@ -14,8 +14,9 @@ build/
 *.keystone.db-*
 keystone-data/
 
-# Benchmark raw output (large, machine-specific)
+# Benchmark run output (large, machine-specific) — at any depth
 benchmarks/runs/
+**/benchmarks/runs/
 *.jsonl
 
 # Secrets — never commit (belt and braces; the plugin also refuses to cache these)
