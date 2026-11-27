@@ -85,6 +85,37 @@ interface StoreFile {
 
 const STORE_VERSION = 1;
 
+/** The outcome of loading the on-disk facts file. */
+interface LoadResult {
+  facts: Fact[];
+  /**
+   * True when the file existed but could not be fully read as a valid store (bad
+   * JSON, a non-array `facts`, or one or more malformed entries). A corrupt file
+   * must be preserved, not overwritten, so the first write quarantines it first.
+   */
+  corrupt: boolean;
+}
+
+/**
+ * Minimal shape check for a persisted fact. Findings are Tier-B (precious), so a
+ * partially-corrupt file keeps every entry that still looks like a usable fact
+ * and only the unrecoverable ones are dropped (and the file is quarantined so the
+ * dropped bytes are never lost). Checks only the fields the engine relies on.
+ */
+function isValidFact(value: unknown): value is Fact {
+  if (typeof value !== "object" || value === null) return false;
+  const f = value as Partial<Fact>;
+  return (
+    typeof f.id === "string" &&
+    (f.kind === "structure" || f.kind === "finding") &&
+    typeof f.statement === "string" &&
+    typeof f.binding === "object" &&
+    f.binding !== null &&
+    typeof f.createdAt === "number" &&
+    (f.supersededBy === null || typeof f.supersededBy === "string")
+  );
+}
+
 /**
  * Canonical absolute form of a project root, resolving 8.3 short names,
  * drive-letter case and symlinks so independent entry points (a skill run from
@@ -119,23 +150,57 @@ export function openStore(options: StoreOptions): KnowstoneStore {
   const dir = projectDir(options);
   const filePath = join(dir, "facts.json");
 
-  const load = (): StoreFile => {
-    if (!existsSync(filePath)) return { version: STORE_VERSION, facts: [] };
+  const load = (): LoadResult => {
+    if (!existsSync(filePath)) return { facts: [], corrupt: false };
+    let raw: string;
     try {
-      const parsed = JSON.parse(readFileSync(filePath, "utf8")) as Partial<StoreFile>;
-      if (!parsed || !Array.isArray(parsed.facts)) return { version: STORE_VERSION, facts: [] };
-      return { version: parsed.version ?? STORE_VERSION, facts: parsed.facts };
+      raw = readFileSync(filePath, "utf8");
+    } catch {
+      // Present but unreadable: treat as corrupt so we never silently discard it.
+      return { facts: [], corrupt: true };
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<StoreFile>;
+      if (!parsed || !Array.isArray(parsed.facts)) return { facts: [], corrupt: true };
+      const valid = parsed.facts.filter(isValidFact);
+      // A file whose entries were partly unreadable is still corrupt: keep the
+      // recoverable facts in memory but preserve the original bytes on next write.
+      return { facts: valid, corrupt: valid.length !== parsed.facts.length };
     } catch {
       // A corrupt store must never crash the plugin: start empty in memory and
-      // leave the file untouched until the next successful write.
-      return { version: STORE_VERSION, facts: [] };
+      // preserve the bad file (quarantine) on the next write, never overwrite it.
+      return { facts: [], corrupt: true };
     }
   };
 
-  const byId = new Map<string, Fact>(load().facts.map((f): [string, Fact] => [f.id, f]));
+  const loaded = load();
+  const byId = new Map<string, Fact>(loaded.facts.map((f): [string, Fact] => [f.id, f]));
+  // Set once the corrupt file has been moved aside, so we quarantine only once.
+  let corruptQuarantined = !loaded.corrupt;
+
+  /**
+   * Preserve a corrupt facts file before the first write overwrites it. Tier-B
+   * findings are precious, so the original bytes are renamed to a timestamped
+   * sidecar for human recovery rather than being lost. Best-effort: a failure to
+   * move it must not block the (self-healing) write.
+   */
+  const quarantineCorrupt = (): void => {
+    if (corruptQuarantined) return;
+    corruptQuarantined = true;
+    try {
+      if (existsSync(filePath)) {
+        const sidecar = join(dir, `facts.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}.json`);
+        renameSync(filePath, sidecar);
+      }
+    } catch {
+      // If we cannot move it aside, we still proceed: self-healing the store
+      // matters more than the backup, and the write below is atomic.
+    }
+  };
 
   const persist = (): void => {
     mkdirSync(dir, { recursive: true });
+    quarantineCorrupt(); // preserve any corrupt original before we replace it
     const out: StoreFile = { version: STORE_VERSION, facts: [...byId.values()] };
     const tmp = `${filePath}.tmp`;
     writeFileSync(tmp, JSON.stringify(out, null, 2), "utf8");
