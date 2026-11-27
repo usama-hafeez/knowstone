@@ -293,7 +293,7 @@ function parseSql(content: string, record: (table: string, columns: Column[]) =>
  * with ".") and the shared noise directories. Best-effort: all fs calls are
  * wrapped so it never throws.
  */
-function findSqlFiles(root: string): string[] {
+export function findSqlFiles(root: string): string[] {
   const out: string[] = [];
 
   const walk = (absDir: string, relDir: string): void => {
