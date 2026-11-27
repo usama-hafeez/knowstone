@@ -12,7 +12,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { projectDir, type StoreOptions } from "./store.js";
+import { assertProjectDir, projectDir, writeProjectMarker, type StoreOptions } from "./store.js";
 import type { HashSnapshot } from "./incremental.js";
 import type { StructureSummary } from "./structure.js";
 import type { Route } from "./routes.js";
@@ -60,6 +60,12 @@ export function cachePath(options: StoreOptions): string {
  * cache-format version does not match (a stale format is rebuilt, not trusted).
  */
 export function readIndexCache(options: StoreOptions): IndexCache | null {
+  try {
+    // A data dir claimed by a different project must never serve its cache here.
+    assertProjectDir(options);
+  } catch {
+    return null;
+  }
   const filePath = cachePath(options);
   if (!existsSync(filePath)) return null;
   try {
@@ -99,8 +105,10 @@ function isValidCache(parsed: Partial<IndexCache> | null | undefined): parsed is
  * cache-format version, which is stamped here.
  */
 export function writeIndexCache(options: StoreOptions, cache: Omit<IndexCache, "version">): void {
+  assertProjectDir(options); // never clobber another project's data directory
   const dir = projectDir(options);
   mkdirSync(dir, { recursive: true });
+  writeProjectMarker(options); // claim this data dir for this project
   const out: IndexCache = { version: CACHE_VERSION, ...cache };
   const filePath = cachePath(options);
   const tmp = `${filePath}.tmp`;

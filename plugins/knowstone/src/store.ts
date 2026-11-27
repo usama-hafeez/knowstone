@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { hashContent } from "./hash.js";
 import type { Binding } from "./freshness.js";
 import { scanForSecrets } from "./secret-guard.js";
+import { logEvent } from "./log.js";
 
 export type FactKind = "structure" | "finding";
 
@@ -131,10 +132,15 @@ export function canonicalProjectRoot(projectRoot: string): string {
   }
 }
 
-/** A short, stable key for a project, derived from its absolute path. */
-function projectKey(projectRoot: string): string {
+/**
+ * A short, stable key for a project, derived from its absolute path. Uses 128 bits
+ * (32 hex chars) of the path hash so two distinct projects cannot realistically
+ * collide into the same data directory (the isolation marker is a second line of
+ * defence against the astronomically unlikely collision).
+ */
+export function projectKey(projectRoot: string): string {
   const normalised = projectRoot.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return hashContent(normalised).slice(0, 16);
+  return hashContent(normalised).slice(0, 32);
 }
 
 /**
@@ -146,7 +152,74 @@ export function projectDir(options: StoreOptions): string {
   return join(options.baseDir, "projects", projectKey(options.projectRoot));
 }
 
+/** The isolation marker path for a project's data directory. */
+function markerPath(options: StoreOptions): string {
+  return join(projectDir(options), "meta.json");
+}
+
+/** The project root recorded in the data dir's isolation marker, or null if none. */
+function readMarkerRoot(options: StoreOptions): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(markerPath(options), "utf8")) as {
+      projectRoot?: unknown;
+    };
+    return typeof parsed.projectRoot === "string" ? parsed.projectRoot : null;
+  } catch {
+    return null; // no marker, or unreadable: nothing recorded
+  }
+}
+
+/**
+ * Write the isolation marker if absent, recording which project owns this data
+ * directory. Best-effort and write-once: an existing marker is never overwritten,
+ * so a (detected) collision is preserved for assertProjectDir to catch.
+ */
+export function writeProjectMarker(options: StoreOptions): void {
+  try {
+    if (readMarkerRoot(options) !== null) return;
+    const dir = projectDir(options);
+    mkdirSync(dir, { recursive: true });
+    const tmp = `${markerPath(options)}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ projectRoot: options.projectRoot }), "utf8");
+    renameSync(tmp, markerPath(options));
+  } catch {
+    // The marker is a defensive aid, not load-bearing: never fail a write over it.
+  }
+}
+
+/**
+ * Thrown when a data directory already belongs to a different project (a key
+ * collision). We refuse rather than ever serve or clobber another project's data.
+ */
+export class ProjectCollisionError extends Error {
+  constructor(projectRoot: string, owner: string) {
+    super(
+      `knowstone: data directory for "${projectRoot}" is already claimed by "${owner}"; refusing to avoid cross-project data bleed`,
+    );
+    this.name = "ProjectCollisionError";
+  }
+}
+
+/**
+ * Guard against cross-project bleed: if this data directory carries a marker for a
+ * different project root, fail loudly instead of reading or writing another
+ * project's facts. Logs the anomaly. A no-op in the normal case (no marker, or a
+ * matching one). With 128-bit keys this never triggers in practice; it exists so a
+ * collision can never silently bleed.
+ */
+export function assertProjectDir(options: StoreOptions): void {
+  const owner = readMarkerRoot(options);
+  if (owner !== null && owner !== options.projectRoot) {
+    logEvent(options.baseDir, "isolation-collision", {
+      projectKey: projectKey(options.projectRoot),
+      owner,
+    });
+    throw new ProjectCollisionError(options.projectRoot, owner);
+  }
+}
+
 export function openStore(options: StoreOptions): KnowstoneStore {
+  assertProjectDir(options); // never serve or clobber another project's facts
   const dir = projectDir(options);
   const filePath = join(dir, "facts.json");
 
@@ -191,6 +264,10 @@ export function openStore(options: StoreOptions): KnowstoneStore {
       if (existsSync(filePath)) {
         const sidecar = join(dir, `facts.corrupt-${Date.now()}-${randomUUID().slice(0, 8)}.json`);
         renameSync(filePath, sidecar);
+        logEvent(options.baseDir, "store-quarantine", {
+          projectKey: projectKey(options.projectRoot),
+          sidecar: sidecar.slice(dir.length + 1), // filename only, not the full path
+        });
       }
     } catch {
       // If we cannot move it aside, we still proceed: self-healing the store
@@ -201,6 +278,7 @@ export function openStore(options: StoreOptions): KnowstoneStore {
   const persist = (): void => {
     mkdirSync(dir, { recursive: true });
     quarantineCorrupt(); // preserve any corrupt original before we replace it
+    writeProjectMarker(options); // claim this data dir for this project
     const out: StoreFile = { version: STORE_VERSION, facts: [...byId.values()] };
     const tmp = `${filePath}.tmp`;
     writeFileSync(tmp, JSON.stringify(out, null, 2), "utf8");

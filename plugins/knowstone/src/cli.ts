@@ -28,10 +28,18 @@ import { extractRoutes } from "./routes.js";
 import { extractSchema } from "./schema.js";
 import { extractScripts } from "./scripts.js";
 import { snapshotRepo } from "./incremental.js";
-import { buildBinding, checkFreshness } from "./freshness.js";
-import { canonicalProjectRoot, openStore, SecretError, type StoreOptions } from "./store.js";
+import { buildBinding, checkFreshness, type FreshnessResult } from "./freshness.js";
+import {
+  canonicalProjectRoot,
+  openStore,
+  projectKey,
+  SecretError,
+  type StoreOptions,
+} from "./store.js";
 import { writeIndexCache } from "./cache.js";
 import { renderCard } from "./card.js";
+import { enforceCaps } from "./caps.js";
+import { logEvent } from "./log.js";
 
 /** The environment a CLI run operates in (injectable for tests). */
 export interface CliEnv {
@@ -97,6 +105,31 @@ function resolveStore(flags: Record<string, string | boolean>, env: CliEnv): Sto
   return { baseDir, projectRoot };
 }
 
+/**
+ * Record one freshness decision to the structured log (PLAN.md M5). Best-effort via
+ * logEvent; logs the fact id, the status and reason, and how many cone files
+ * changed — never the fact's statement text.
+ */
+function logFreshness(
+  options: StoreOptions,
+  factId: string,
+  result: FreshnessResult,
+  at: number,
+): void {
+  logEvent(
+    options.baseDir,
+    "freshness",
+    {
+      projectKey: projectKey(options.projectRoot),
+      factId,
+      status: result.status,
+      reason: result.reason,
+      changed: result.changed.length,
+    },
+    at,
+  );
+}
+
 /** Format the language breakdown as "ts 100, php 20". */
 function languageSummary(byLanguage: Record<string, number>): string {
   const parts = Object.entries(byLanguage).map(([lang, count]) => `${lang} ${count}`);
@@ -157,6 +190,9 @@ function cmdMap(flags: Record<string, string | boolean>, env: CliEnv): number {
     degraded,
     truncated,
   });
+
+  // Keep Tier-A caches within budget (never evicts Tier-B findings).
+  enforceCaps(options.baseDir, {}, env.now);
 
   // Report each view honestly: a count only when the extractor succeeded, and
   // "unknown" (never "0") for a view whose extractor failed.
@@ -246,6 +282,7 @@ function cmdNote(flags: Record<string, string | boolean>, env: CliEnv): number {
     toolVersion: KNOWSTONE_VERSION,
     now: env.now,
   });
+  logFreshness(options, fact.id, freshness, env.now);
   env.out(
     `Recorded finding [${fact.id}] bound to ${binding.cone.length} evidence file(s). Status: ${freshness.status}.`,
   );
@@ -281,6 +318,7 @@ function cmdRecall(flags: Record<string, string | boolean>, env: CliEnv): number
       toolVersion: KNOWSTONE_VERSION,
       now: env.now,
     });
+    logFreshness(options, fact.id, result, env.now);
     if (result.status === "FRESH") {
       fresh.push(`  [${fact.id}] ${fact.statement}`);
     } else {
