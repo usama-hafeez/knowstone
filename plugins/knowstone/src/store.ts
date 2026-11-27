@@ -9,7 +9,14 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { hashContent } from "./hash.js";
 import type { Binding } from "./freshness.js";
@@ -78,14 +85,38 @@ interface StoreFile {
 
 const STORE_VERSION = 1;
 
+/**
+ * Canonical absolute form of a project root, resolving 8.3 short names,
+ * drive-letter case and symlinks so independent entry points (a skill run from
+ * the project cwd, the SessionStart hook reading CLAUDE_PROJECT_DIR) key the same
+ * project to the same store. Best-effort: falls back to the given path if it
+ * cannot be resolved (for example it does not exist).
+ */
+export function canonicalProjectRoot(projectRoot: string): string {
+  try {
+    return realpathSync.native(projectRoot);
+  } catch {
+    return projectRoot;
+  }
+}
+
 /** A short, stable key for a project, derived from its absolute path. */
 function projectKey(projectRoot: string): string {
   const normalised = projectRoot.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
   return hashContent(normalised).slice(0, 16);
 }
 
+/**
+ * The per-project data directory for a store: baseDir/projects/<key>. Exposed so
+ * sibling caches (for example the Tier-A index cache) can live alongside the
+ * facts file under the same project-isolated key.
+ */
+export function projectDir(options: StoreOptions): string {
+  return join(options.baseDir, "projects", projectKey(options.projectRoot));
+}
+
 export function openStore(options: StoreOptions): KnowstoneStore {
-  const dir = join(options.baseDir, "projects", projectKey(options.projectRoot));
+  const dir = projectDir(options);
   const filePath = join(dir, "facts.json");
 
   const load = (): StoreFile => {
