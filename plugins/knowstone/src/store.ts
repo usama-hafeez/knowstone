@@ -133,14 +133,36 @@ export function canonicalProjectRoot(projectRoot: string): string {
 }
 
 /**
+ * True on filesystems that treat paths case-insensitively, where "/p/App" and
+ * "/p/app" are the SAME directory and must key to the same project. Windows and the
+ * default macOS filesystem fold case; Linux (and other POSIX) is case-sensitive, so
+ * folding there would wrongly merge two genuinely distinct projects into one data
+ * directory. Heuristic by platform: a case-sensitive macOS volume (rare) is the one
+ * residual edge, and the isolation marker still prevents any actual data bleed.
+ */
+function foldsCase(): boolean {
+  return process.platform === "win32" || process.platform === "darwin";
+}
+
+/**
+ * Canonical comparison form of a project root: backslashes to forward slashes,
+ * trailing slashes stripped, and case folded only on case-insensitive filesystems.
+ * Used both to derive the data-dir key and to compare isolation markers, so the two
+ * always agree about what counts as "the same project".
+ */
+function normaliseRoot(projectRoot: string): string {
+  const slashed = projectRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+  return foldsCase() ? slashed.toLowerCase() : slashed;
+}
+
+/**
  * A short, stable key for a project, derived from its absolute path. Uses 128 bits
  * (32 hex chars) of the path hash so two distinct projects cannot realistically
  * collide into the same data directory (the isolation marker is a second line of
  * defence against the astronomically unlikely collision).
  */
 export function projectKey(projectRoot: string): string {
-  const normalised = projectRoot.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return hashContent(normalised).slice(0, 32);
+  return hashContent(normaliseRoot(projectRoot)).slice(0, 32);
 }
 
 /**
@@ -209,7 +231,9 @@ export class ProjectCollisionError extends Error {
  */
 export function assertProjectDir(options: StoreOptions): void {
   const owner = readMarkerRoot(options);
-  if (owner !== null && owner !== options.projectRoot) {
+  // Compare in the same normalised form the key uses: on a case-insensitive FS the
+  // same project reached as "App" or "app" must NOT look like a collision.
+  if (owner !== null && normaliseRoot(owner) !== normaliseRoot(options.projectRoot)) {
     logEvent(options.baseDir, "isolation-collision", {
       projectKey: projectKey(options.projectRoot),
       owner,
