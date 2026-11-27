@@ -40,13 +40,27 @@ export interface SessionOptions {
   arm: Arm;
   /** Absolute path to plugins/knowstone, passed only for the on arm. */
   pluginDir?: string;
-  /** Fresh config dir for this run (isolates ~/.claude). */
-  configDir: string;
-  /** Plugin data dir for this run (the on arm's store lives here). */
+  /**
+   * The plugin data dir the on arm's store lives in. We export CLAUDE_PLUGIN_DATA
+   * as this, but note (VERIFIED) that Claude Code OVERRIDES it for an inline
+   * (--plugin-dir) plugin to `<config>/plugins/data/<name>-inline`; the caller
+   * therefore sets this to that exact path (see run.ts inlineDataDir) so the seed
+   * and the session agree. The config dir is NOT overridden: a fresh
+   * CLAUDE_CONFIG_DIR is not logged in, so the run must inherit the user's real
+   * subscription login. The arm is isolated by --plugin-dir (session-only, no
+   * install) and --no-session-persistence.
+   */
   pluginData: string;
-  /** Built-in tools to allow, comma-separated (held constant across arms). */
+  /** Built-in tools to make available, comma-separated (held constant across arms). */
   tools: string;
-  /** Permission mode; dontAsk so a headless run is not blocked on approvals. */
+  /**
+   * Tools to AUTO-APPROVE, comma-separated. Required: without it, a headless run in
+   * dontAsk mode DENIES every tool that would need approval (verified in
+   * calibration: the agent could not even read a file), which would make the token
+   * and exploration comparison meaningless. Held constant across arms.
+   */
+  allowedTools: string;
+  /** Permission mode (dontAsk); auto-approval is driven by allowedTools above. */
   permissionMode: string;
   /** Safety cap on agent turns. */
   maxTurns: number;
@@ -97,6 +111,8 @@ export function buildArgs(opts: SessionOptions): string[] {
     opts.permissionMode,
     "--tools",
     opts.tools,
+    "--allowedTools",
+    opts.allowedTools,
     "--no-session-persistence",
     "--output-format",
     "stream-json",
@@ -229,7 +245,6 @@ export function runSession(opts: SessionOptions): Promise<SessionResult> {
   const command = opts.command ?? defaultCommand();
   const args = buildArgs(opts);
   const env = sessionEnv(opts);
-  mkdirSync(opts.configDir, { recursive: true });
   mkdirSync(opts.pluginData, { recursive: true });
 
   return new Promise<SessionResult>((resolve) => {
@@ -311,15 +326,16 @@ function consumeLine(line: string, acc: StreamAccumulator, rawLogPath: string): 
 }
 
 /**
- * The environment for one run: the parent env plus per-run isolation, minus any
- * API key so the subscription login is always used. Effort is pinned via the env
- * var too, because it takes precedence over --effort.
+ * The environment for one run: the parent env, minus any API key so the
+ * subscription login is always used, plus the per-run plugin data dir and a
+ * pinned effort (the env var takes precedence over --effort). CLAUDE_CONFIG_DIR is
+ * deliberately left as inherited: a fresh config dir is not logged in, so runs
+ * must use the user's real login.
  */
 function sessionEnv(opts: SessionOptions): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
   delete env.ANTHROPIC_AUTH_TOKEN;
-  env.CLAUDE_CONFIG_DIR = opts.configDir;
   env.CLAUDE_PLUGIN_DATA = opts.pluginData;
   env.CLAUDE_CODE_EFFORT_LEVEL = opts.effort;
   return env;

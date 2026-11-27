@@ -22,7 +22,7 @@
  */
 
 import type { Grade, RepoType, Task } from "./types.ts";
-import { containsAll, gradeAdversarial } from "./grade.ts";
+import { containsAll, containsAny, gradeAdversarial } from "./grade.ts";
 
 /**
  * Per-repo binding for one task. `target` fills the prompt; `expected` are tokens
@@ -33,8 +33,15 @@ export interface PlanEntry {
   taskId: string;
   /** Substituted into the prompt's ${target}. */
   target?: string;
-  /** Tokens a correct answer must contain (non-adversarial grading). */
+  /** Tokens a correct answer must ALL contain (non-adversarial grading). */
   expected?: string[];
+  /**
+   * Alternative accepted phrasings: the answer is correct if it contains ALL of
+   * `expected` OR ANY of these. Needed because a free-form agent states a concept
+   * in its own words (calibration showed "recomputed each read" is as correct as
+   * the literal "derived on read"). Applied blind to both arms.
+   */
+  expectedAny?: string[];
   /** For a recall/finding task: the statement to seed, and its evidence file(s). */
   seed?: { statement: string; evidence: string[] };
   /** Adversarial only: the value that is correct AFTER the edit. */
@@ -50,18 +57,22 @@ function fill(template: string, target: string | undefined): string {
   return template.replace(/\$\{target\}/g, target ?? "");
 }
 
-/** Standard keyword grade for a non-adversarial task. */
-function keywordGrade(answer: string, expected: string[] | undefined): Grade {
-  if (!expected || expected.length === 0) {
+/** Standard keyword grade for a non-adversarial task: all of expected, or any alt. */
+function keywordGrade(entry: PlanEntry, answer: string): Grade {
+  const expected = entry.expected ?? [];
+  const expectedAny = entry.expectedAny ?? [];
+  if (expected.length === 0 && expectedAny.length === 0) {
     return { correct: false, staleServed: false, note: "no expected tokens configured" };
   }
-  const correct = containsAll(answer, expected);
+  const hasAll = expected.length > 0 && containsAll(answer, expected);
+  const hasAny = expectedAny.length > 0 && containsAny(answer, expectedAny);
+  const correct = hasAll || hasAny;
   return {
     correct,
     staleServed: false,
     note: correct
-      ? `found all of: ${expected.join(", ")}`
-      : `missing one of: ${expected.join(", ")}`,
+      ? `matched (all of [${expected.join(", ")}] or any of [${expectedAny.join(", ")}])`
+      : `missing: need all of [${expected.join(", ")}] or any of [${expectedAny.join(", ")}]`,
   };
 }
 
@@ -190,7 +201,7 @@ export function bindGrade(task: Task, entry: PlanEntry): (answer: string) => Gra
     return (answer: string) =>
       gradeAdversarial(answer, entry.freshValue ?? "", entry.staleValue ?? "");
   }
-  return (answer: string) => keywordGrade(answer, entry.expected);
+  return (answer: string) => keywordGrade(entry, answer);
 }
 
 /** Look up a task template by id. Throws if the id is not in the battery. */

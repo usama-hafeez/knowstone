@@ -1,0 +1,5 @@
+# Build output and generated/machine-specific files — not source, don't format-check.
+dist/
+coverage/
+node_modules/
+benchmarks/runs/

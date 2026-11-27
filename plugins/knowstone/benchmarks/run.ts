@@ -27,7 +27,7 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
 import type { Arm, RunRecord } from "./types.ts";
 import { TASKS, planTask, type PlannedTask, type PlanEntry } from "./tasks.ts";
 import { planFor, type RepoPlan } from "./repos.ts";
@@ -41,11 +41,14 @@ interface Options {
   model: string;
   effort: string;
   tools: string;
+  allowedTools: string;
   permissionMode: string;
   maxTurns: number;
   timeoutMs: number;
   maxSessions: number;
   outDir: string;
+  /** If non-empty, only these task ids are scheduled (for a focused calibration). */
+  only: string[];
 }
 
 function parseFlags(argv: string[]): Options {
@@ -72,11 +75,16 @@ function parseFlags(argv: string[]): Options {
     model: flags.get("model") ?? "sonnet",
     effort: flags.get("effort") ?? "medium",
     tools: flags.get("tools") ?? "Read,Grep,Glob,Bash",
+    allowedTools: flags.get("allowed-tools") ?? "Read,Grep,Glob,Bash",
     permissionMode: flags.get("permission-mode") ?? "dontAsk",
     maxTurns: Number(flags.get("max-turns") ?? 40),
     timeoutMs: Number(flags.get("timeout-ms") ?? 300_000),
     maxSessions: Number(flags.get("max-sessions") ?? (mode === "full" ? 1000 : 8)),
     outDir: flags.get("out") ?? join(process.cwd(), "benchmarks", "runs"),
+    only: (flags.get("only") ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s !== ""),
   };
 }
 
@@ -128,6 +136,24 @@ function ensureBuilt(root: string): string {
     );
   }
   return cli;
+}
+
+/**
+ * The data directory the session will actually read for the inline-loaded plugin.
+ *
+ * VERIFIED (Claude Code v2.1.332): a plugin loaded with `--plugin-dir` is an
+ * "inline" plugin, and Claude Code sets CLAUDE_PLUGIN_DATA for it to
+ * `<config>/plugins/data/<name>-inline`, OVERRIDING any CLAUDE_PLUGIN_DATA we
+ * export. So the on arm MUST seed into this path, not a scratch dir, or the
+ * session's card and recall read an empty store and the seeded finding is
+ * invisible (which is exactly what the first calibration showed). This dir is
+ * shared across runs, so the caller clears it before each on-arm session. Override
+ * with KN_BENCH_INLINE_DATA if a Claude Code version changes the path.
+ */
+export function inlineDataDir(): string {
+  if (process.env.KN_BENCH_INLINE_DATA) return process.env.KN_BENCH_INLINE_DATA;
+  const config = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  return join(config, "plugins", "data", "knowstone-inline");
 }
 
 /** Seed one Tier-B finding into the ON arm's store, bound at the pre-edit state. */
@@ -187,7 +213,11 @@ export async function main(opts: Options): Promise<string> {
   const records: RunRecord[] = [];
 
   for (const repoId of opts.repos) {
-    const plan = planFor(repoId);
+    const full = planFor(repoId);
+    const plan: RepoPlan =
+      opts.only.length > 0
+        ? { config: full.config, entries: full.entries.filter((e) => opts.only.includes(e.taskId)) }
+        : full;
     // Materialise one pristine template per repo; copy it per session.
     const template = join(scratch, `${repoId}-template`);
     rmSync(template, { recursive: true, force: true });
@@ -236,8 +266,9 @@ async function runOne(opts: Options, ctx: RunOneCtx): Promise<RunRecord> {
   const { plan, item, template, scratch, cli, pluginDir } = ctx;
   const tag = `${item.task.id}-${item.arm}-${item.warmup ? "warm" : `r${item.rep}`}-${ctx.sessionsRun}`;
   const rundir = join(scratch, "run", tag);
-  const configDir = join(scratch, "config", tag);
-  const pluginData = join(scratch, "data", tag);
+  // The on arm must seed into the exact dir Claude Code reads for the inline
+  // plugin (see inlineDataDir); it is shared, so we clear it per on-arm session.
+  const pluginData = inlineDataDir();
   rmSync(rundir, { recursive: true, force: true });
   cpSync(template, rundir, { recursive: true });
 
@@ -271,10 +302,14 @@ async function runOne(opts: Options, ctx: RunOneCtx): Promise<RunRecord> {
   }
 
   try {
-    // ON arm: seed the finding at the pre-edit state, so its binding captures the
-    // original hash. Then apply the adversarial edit (if any) so the recorded fact
-    // is stale at query time. OFF arm gets the same edited code but no seed.
-    if (item.arm === "on") seedFinding(cli, rundir, pluginData, entry);
+    // ON arm: clear the shared inline store, then seed the finding at the pre-edit
+    // state so its binding captures the original hash. Then apply the adversarial
+    // edit (if any) so the recorded fact is stale at query time. OFF arm gets the
+    // same edited code but no seed and no plugin.
+    if (item.arm === "on") {
+      rmSync(pluginData, { recursive: true, force: true });
+      seedFinding(cli, rundir, pluginData, entry);
+    }
     applyEdit(rundir, entry);
 
     const result = await runSession({
@@ -284,9 +319,9 @@ async function runOne(opts: Options, ctx: RunOneCtx): Promise<RunRecord> {
       effort: opts.effort,
       arm: item.arm,
       pluginDir,
-      configDir,
       pluginData,
       tools: opts.tools,
+      allowedTools: opts.allowedTools,
       permissionMode: opts.permissionMode,
       maxTurns: opts.maxTurns,
       timeoutMs: opts.timeoutMs,
@@ -300,7 +335,6 @@ async function runOne(opts: Options, ctx: RunOneCtx): Promise<RunRecord> {
   } finally {
     // Clean the biggest per-session dirs to keep scratch bounded; keep raw logs.
     rmSync(rundir, { recursive: true, force: true });
-    rmSync(configDir, { recursive: true, force: true });
   }
 }
 

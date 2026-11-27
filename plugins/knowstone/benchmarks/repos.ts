@@ -132,6 +132,15 @@ export const SMALL_TS_PLAN: RepoPlan = {
       taskId: "t7-recall-decision",
       target: "how a fact's freshness status is stored",
       expected: ["derived on read"],
+      // Accept the concept in the agent's own words (calibration paraphrases).
+      expectedAny: [
+        "derived on read",
+        "recomputed",
+        "computed each",
+        "worked out each",
+        "not stored",
+        "no status field",
+      ],
       seed: {
         statement:
           "Decision: freshness status is derived on read and never stored, so the stale flag cannot itself go stale.",
@@ -143,6 +152,13 @@ export const SMALL_TS_PLAN: RepoPlan = {
       taskId: "t8-recall-rootcause",
       target: "stale findings being re-served after code changes",
       expected: ["re-verify"],
+      expectedAny: [
+        "re-verify",
+        "re-verification",
+        "withheld",
+        "held for re-confirmation",
+        "auto-restore",
+      ],
       seed: {
         statement:
           "Root cause: a fact must be withheld for re-verify once its cone changes; auto-restoring on a re-matching hash would silently re-serve a stale fact.",

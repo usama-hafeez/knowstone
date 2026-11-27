@@ -48,9 +48,15 @@ says the benefit is marginal — plainly.
 - Model and effort pinned with `--model` / `--effort` (and `CLAUDE_CODE_EFFORT_LEVEL`,
   which takes precedence). Tools held constant with `--tools`. `--permission-mode
 dontAsk` and `--no-session-persistence` keep headless runs unattended and clean.
-- Each run gets its own `CLAUDE_CONFIG_DIR`, so your real `~/.claude` is never
-  touched. **No `ANTHROPIC_API_KEY` is ever set and `--bare` is never used**, so
-  runs use your subscription login (Max usage), not metered API billing.
+- Runs inherit your real config dir, because a **fresh `CLAUDE_CONFIG_DIR` is not
+  logged in** (verified: it returns "Not logged in"). So the arm is isolated by
+  `--plugin-dir` (session-only, no install, no marketplace mutation) plus
+  `--no-session-persistence`, not by a throwaway config dir. Your other enabled
+  plugins and global CLAUDE.md therefore load in **both** arms — constant across
+  them, which is what the protocol requires. **No `ANTHROPIC_API_KEY` is ever set
+  and `--bare` is never used**, so runs use your subscription login (Max usage),
+  not metered API billing. Only `CLAUDE_PLUGIN_DATA` is overridden per run, to hold
+  the on arm's seeded store.
 
 ## Determinism and isolation
 
@@ -117,5 +123,6 @@ large run:
    the runtime overrides it, the seed path is adjusted to match.
 3. **Default effort for `-p` runs** — pinned explicitly via `--effort` and the env
    var, so it does not matter, but worth eyeballing once.
-4. **Subscription auth under a fresh `CLAUDE_CONFIG_DIR`** — confirm a fresh config
-   dir still authenticates on the Max login without prompting.
+4. **Subscription auth under a fresh `CLAUDE_CONFIG_DIR`** — RESOLVED: a fresh
+   config dir is NOT logged in ("Not logged in · Please run /login"), so runs
+   inherit the real config dir and isolate the arm via `--plugin-dir` instead.

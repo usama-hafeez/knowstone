@@ -35,6 +35,18 @@ describe("task battery", () => {
     expect(grade("cli.ts imports indexer and store").correct).toBe(false);
   });
 
+  it("keyword grading accepts an alternative phrasing via expectedAny", () => {
+    const task = taskById("t7-recall-decision");
+    const grade = bindGrade(task, {
+      taskId: task.id,
+      expected: ["derived on read"],
+      expectedAny: ["recomputed", "not stored"],
+    });
+    // Misses the literal 'derived on read' but states the concept another way.
+    expect(grade("the status is recomputed from the binding each read").correct).toBe(true);
+    expect(grade("the status is kept in a field on the fact").correct).toBe(false);
+  });
+
   it("adversarial grading routes through gradeAdversarial", () => {
     const task = taskById("t9-adversarial-direct");
     const grade = bindGrade(task, {
