@@ -19,17 +19,21 @@ that is no longer true.
 - Built to work across languages and frameworks (PHP/Laravel, Node/TypeScript, Python,
   Go, and more), not tied to one stack.
 
-**Status: pre-development.** The research that led here is in [`research/`](./research/).
-The build plan is in [`PLAN.md`](./PLAN.md). No plugin code is written yet.
+**Status: release candidate (not yet published publicly).** The freshness engine, storage,
+indexer, skills, session card, hardening and benchmark are all built and tested across Linux,
+macOS and Windows on Node 20 and 22. The trust guarantee is proven (0 stale serves; see
+[`plugins/knowstone/benchmarks/RESULTS.md`](./plugins/knowstone/benchmarks/RESULTS.md)). The
+build plan is in [`PLAN.md`](./PLAN.md); the research that led here is in
+[`research/`](./research/).
 
-## Repository layout (planned)
+## Repository layout
 
 ```
 custom-claude-plugins/
-├── .claude-plugin/marketplace.json   # marketplace listing (added in M0)
+├── .claude-plugin/marketplace.json   # marketplace listing
 ├── plugins/
-│   └── knowstone/                     # the Knowstone plugin (added from M0)
-├── research/                         # market/competitor/caching research (done)
+│   └── knowstone/                     # the Knowstone plugin (ships its built dist/)
+├── research/                         # market/competitor/caching research
 ├── PLAN.md                           # phased development plan
 └── README.md
 ```
