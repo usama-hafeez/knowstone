@@ -1,5 +1,5 @@
 ---
-description: Retrieve Knowstone's verified findings for this project, each freshness-checked against the current code. Findings whose code changed are shown as "needs re-verify" and must not be trusted as current. Use when returning to a project, investigating a recurring issue, or before acting on a past conclusion.
+description: Retrieve Knowstone's verified findings for this project, each freshness-checked against the current code; findings whose code changed are shown as "needs re-verify" and must not be trusted as current. Consult it before exploring the codebase to answer a question it may already have answered, when returning to a project, investigating a recurring issue, or before acting on a past conclusion.
 allowed-tools: Bash(node:*)
 ---
 
